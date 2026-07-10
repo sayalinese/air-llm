@@ -1,0 +1,57 @@
+{
+  "model": "EmbeddedResidualSAGE",
+  "continuous_features": [
+    "O_LATITUDE",
+    "O_LONGITUDE",
+    "D_LATITUDE",
+    "D_LONGITUDE",
+    "FLIGHTS",
+    "O_TEMP",
+    "O_PRCP",
+    "O_WSPD",
+    "D_TEMP",
+    "D_PRCP",
+    "D_WSPD",
+    "CRS_DEP_TIME",
+    "CRS_ARR_TIME"
+  ],
+  "categorical_features": [
+    "ORIGIN",
+    "DEST",
+    "MONTH",
+    "DAY_OF_WEEK",
+    "CRS_DEP_TIME_HOUR",
+    "CRS_ARR_TIME_HOUR"
+  ],
+  "cat_sizes": {
+    "ORIGIN": 348,
+    "DEST": 348,
+    "MONTH": 9,
+    "DAY_OF_WEEK": 8,
+    "CRS_DEP_TIME_HOUR": 24,
+    "CRS_ARR_TIME_HOUR": 24
+  },
+  "reports": {
+    "f1": {
+      "acc": 0.6880091081123353,
+      "balanced_acc": 0.5653846495660252,
+      "auc": 0.6172981240657028,
+      "f1": 0.28716852478438215,
+      "threshold": 0.3499999999999999,
+      "val_f1": 0.3407648312995293,
+      "val_bal_acc": 0.6152612526999659
+    },
+    "balanced": {
+      "acc": 0.6600824013628351,
+      "balanced_acc": 0.5714686976251188,
+      "auc": 0.6172981240657028,
+      "f1": 0.2980202499894516,
+      "threshold": 0.32999999999999996,
+      "val_f1": 0.34015590715366933,
+      "val_bal_acc": 0.6157905476920251
+    }
+  },
+  "pos_weight_raw": 3.5326127589362826,
+  "pos_weight_used": 1.8795246098245915,
+  "label_threshold_minutes": 15
+}

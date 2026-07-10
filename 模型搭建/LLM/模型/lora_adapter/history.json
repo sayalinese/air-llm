@@ -1,0 +1,18 @@
+[
+  {
+    "epoch": 1,
+    "train_loss": 2.5811319861134687,
+    "val_loss": 0.4684575050654821,
+    "prompt_style": "compact",
+    "sampling_mode": "balanced_smoke",
+    "balanced_pos_ratio": 0.2,
+    "train_max_samples": 2000,
+    "val_max_samples": 2000,
+    "max_len": 192,
+    "model_arch": "text_from_multimodal",
+    "dataset_schema_version": "chain_llm_strict",
+    "dataset_prompt_version": "propagation_capsule_strict_v1",
+    "dataset_observation_policy": "strict_actual_event_before_prediction",
+    "dataset_daily_root": "C:\\Users\\16960\\Desktop\\\u671f\u672b\u8bba\u6587\\\u4e09\u6a21\u6001\u6570\u636e\u5e93\u5efa\u7acb\u8bf4\u660e\\scripts\\Aeolus_V2\\dataset\\Flight_Chain_LLM_strict"
+  }
+]

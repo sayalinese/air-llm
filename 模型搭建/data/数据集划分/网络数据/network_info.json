@@ -1,0 +1,32 @@
+{
+  "feat_dim": 15,
+  "year": 2024,
+  "label_unit": "minutes",
+  "label_threshold_minutes": 15,
+  "splits": {
+    "train": {
+      "graphs": 219,
+      "nodes": 4219518,
+      "edges": 20642937,
+      "positive": 930924,
+      "total": 4219518,
+      "positive_rate": 0.22062330341996408
+    },
+    "val": {
+      "graphs": 73,
+      "nodes": 1440149,
+      "edges": 7500369,
+      "positive": 233147,
+      "total": 1440149,
+      "positive_rate": 0.16189088767898321
+    },
+    "test": {
+      "graphs": 74,
+      "nodes": 1419394,
+      "edges": 7049845,
+      "positive": 233007,
+      "total": 1419394,
+      "positive_rate": 0.16415949341761343
+    }
+  }
+}

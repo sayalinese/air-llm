@@ -1,0 +1,26 @@
+{
+  "year": 2024,
+  "daily_root": "C:\\Users\\16960\\Desktop\\期末论文\\三模态数据库建立说明\\scripts\\Aeolus_V2\\dataset\\Flight_Chain_LLM_strict",
+  "file_prefix": "flight_chain_llm_strict_",
+  "schema_version": "chain_llm_strict",
+  "prompt_version": "propagation_capsule_strict_v1",
+  "observation_policy": "strict_actual_event_before_prediction",
+  "num_daily_files": 366,
+  "splits": {
+    "train": {
+      "rows": 4022382,
+      "path": "C:\\Users\\16960\\Desktop\\期末论文\\模型搭建\\LLM\\data\\train.jsonl",
+      "num_days": 219
+    },
+    "val": {
+      "rows": 1378938,
+      "path": "C:\\Users\\16960\\Desktop\\期末论文\\模型搭建\\LLM\\data\\val.jsonl",
+      "num_days": 73
+    },
+    "test": {
+      "rows": 1359990,
+      "path": "C:\\Users\\16960\\Desktop\\期末论文\\模型搭建\\LLM\\data\\test.jsonl",
+      "num_days": 74
+    }
+  }
+}

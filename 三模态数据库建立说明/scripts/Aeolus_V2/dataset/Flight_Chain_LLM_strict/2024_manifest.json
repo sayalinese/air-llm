@@ -1,0 +1,16 @@
+{
+  "schema_version": "chain_llm_strict",
+  "prompt_version": "propagation_capsule_strict_v1",
+  "observation_policy": "strict_actual_event_before_prediction",
+  "source_root": "C:\\Users\\16960\\Desktop\\期末论文\\三模态数据库建立说明\\scripts\\Aeolus_V2\\dataset\\Flight_Chain_LLM",
+  "flight_root": "C:\\Users\\16960\\Desktop\\期末论文\\三模态数据库建立说明\\scripts\\flight_with_weather",
+  "output_root": "C:\\Users\\16960\\Desktop\\期末论文\\三模态数据库建立说明\\scripts\\Aeolus_V2\\dataset\\Flight_Chain_LLM_strict",
+  "year": 2024,
+  "daily_files": 366,
+  "written_rows": 6761310,
+  "skipped_files": 0,
+  "window_minutes": 60,
+  "route_history_n": 5,
+  "nearby_radius_km": 200.0,
+  "workers": 16
+}

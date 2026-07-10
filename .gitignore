@@ -1,0 +1,44 @@
+# ===== Python =====
+__pycache__/
+*.pyc
+*.pyo
+.ipynb_checkpoints/
+
+# ===== Qoder =====
+.agents/
+
+# ===== 数据：JSONL（LLM链文本数据）=====
+*.jsonl
+
+# ===== 数据：NPZ（表格划分）=====
+*.npz
+
+# ===== 数据：Parquet（天气数据）=====
+*.parquet
+
+# ===== 数据：DGL（图网络数据）=====
+*.dgl
+
+# ===== 数据：PyTorch张量（链数据，非模型权重）=====
+**/dataset/**/*.pt
+
+# ===== 数据：模型权重 =====
+*.pth
+*.safetensors
+
+# ===== 数据：ZIP压缩包（BTS原始数据）=====
+*.zip
+
+# ===== 数据：PDF论文 =====
+*.pdf
+
+# ===== 数据：大规模CSV（天气+航班数据）=====
+**/flight_with_weather/**/*.csv
+**/Flight_Tabular/**/*.csv
+**/raw/bts/**/*.csv
+
+# ===== 数据：模型保存目录下的张量文件 =====
+**/保存模型/**/*.pt
+
+# ===== 数据：可重新生成的派生文件 =====
+**/样本汉化.csv
