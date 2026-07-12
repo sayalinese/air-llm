@@ -5,7 +5,7 @@ Input:
 - scripts/flight_with_weather/{year}/{month}/flight_with_weather_*.csv
 
 Output:
-- scripts/Aeolus_V2/dataset/Flight_Chain_LLM_strict/{year}/{month}/flight_chain_llm_strict_*.jsonl
+- scripts/Aeolus_V2/dataset/Flight_Chain_LLM_t60/{year}/{month}/flight_chain_llm_t60_*.jsonl
 """
 
 import glob
@@ -19,26 +19,30 @@ from collections import defaultdict
 
 import numpy as np
 import pandas as pd
+from scipy.sparse import coo_matrix
+from scipy.sparse.linalg import lsqr
 from tqdm import tqdm
 
-
 HERE = os.path.dirname(os.path.abspath(__file__))
+sys.path.insert(0, HERE)
+
+from service.prompt import render_compact_features
+
+
 SCRIPT_DIR = os.path.abspath(os.path.join(HERE, "..", "..", "三模态数据库建立说明", "scripts"))
 SOURCE_LLM_ROOT = os.path.join(SCRIPT_DIR, "Aeolus_V2", "dataset", "Flight_Chain_LLM")
 SOURCE_FLIGHT_ROOT = os.path.join(SCRIPT_DIR, "flight_with_weather")
-OUT_ROOT = os.path.join(SCRIPT_DIR, "Aeolus_V2", "dataset", "Flight_Chain_LLM_strict")
+OUT_ROOT = os.path.join(SCRIPT_DIR, "Aeolus_V2", "dataset", "Flight_Chain_LLM_t60")
 
 YEAR = 2024
+PREDICTION_HORIZON_MINUTES = 60
 WINDOW_MINUTES = 60
 ROUTE_HISTORY_N = 5
 NEARBY_RADIUS_KM = 200.0
 SOURCE_MAX_CHAIN = 6
-SCHEMA_VERSION = "chain_llm_strict"
-PROMPT_VERSION = "propagation_capsule_strict_v1"
-OBSERVATION_POLICY = "strict_actual_event_before_prediction"
-
-TASK_INSTRUCTION = "根据传播胶囊判断当前航班是否会出发延误超过15分钟。只输出：正常 或 延误。"
-LABEL_TEXT = {0: "正常", 1: "延误"}
+SCHEMA_VERSION = "chain_llm_t60"
+PROMPT_VERSION = "propagation_capsule_t60_operational"
+OBSERVATION_POLICY = "utc_actual_event_at_or_before_t_minus_60"
 
 FLIGHT_COLS = [
     "FL_DATE",
@@ -100,6 +104,82 @@ def hhmm_to_text(value):
     return f"{minutes // 60:02d}:{minutes % 60:02d}"
 
 
+def minute_offset_to_text(minutes):
+    day_offset, minute_of_day = divmod(int(minutes), 1440)
+    clock = f"{minute_of_day // 60:02d}:{minute_of_day % 60:02d}"
+    return clock if day_offset == 0 else f"D{day_offset:+d} {clock}"
+
+
+def normalize_clock_delta(minutes):
+    """Normalize a local-clock difference to the nearest same-day UTC offset."""
+    return float((float(minutes) + 720.0) % 1440.0 - 720.0)
+
+
+def build_airport_clock_map(df):
+    """Infer per-airport relative UTC offsets from scheduled elapsed times."""
+    pair_deltas = defaultdict(list)
+    for row in df.itertuples(index=False):
+        origin = normalize_token(row.ORIGIN)
+        dest = normalize_token(row.DEST)
+        elapsed = safe_float(row.CRS_ELAPSED_TIME)
+        if not origin or not dest or elapsed is None:
+            continue
+        delta = normalize_clock_delta(hhmm_to_minutes(row.CRS_ARR_TIME) - hhmm_to_minutes(row.CRS_DEP_TIME) - elapsed)
+        if origin <= dest:
+            pair_deltas[(origin, dest)].append(delta)
+        else:
+            pair_deltas[(dest, origin)].append(-delta)
+
+    airports = sorted((set(df["ORIGIN_NORM"]) | set(df["DEST_NORM"])) - {""})
+    airport_index = {airport: idx for idx, airport in enumerate(airports)}
+    parent = list(range(len(airports)))
+
+    def find(idx):
+        while parent[idx] != idx:
+            parent[idx] = parent[parent[idx]]
+            idx = parent[idx]
+        return idx
+
+    def union(left, right):
+        left_root, right_root = find(left), find(right)
+        if left_root != right_root:
+            parent[right_root] = left_root
+
+    rows, cols, values, targets = [], [], [], []
+    equation = 0
+    for (origin, dest), deltas in pair_deltas.items():
+        left, right = airport_index[origin], airport_index[dest]
+        union(left, right)
+        weight = math.sqrt(len(deltas))
+        rows.extend([equation, equation])
+        cols.extend([left, right])
+        values.extend([-weight, weight])
+        targets.append(float(np.median(deltas)) * weight)
+        equation += 1
+
+    roots = {}
+    for idx in range(len(airports)):
+        roots.setdefault(find(idx), idx)
+    for anchor in roots.values():
+        rows.append(equation)
+        cols.append(anchor)
+        values.append(1000.0)
+        targets.append(0.0)
+        equation += 1
+
+    if airports:
+        matrix = coo_matrix((values, (rows, cols)), shape=(equation, len(airports))).tocsr()
+        solution = lsqr(matrix, np.asarray(targets, dtype=np.float64), atol=1e-8, btol=1e-8)[0]
+        solution = np.round(solution / 30.0) * 30.0
+    else:
+        solution = np.array([], dtype=np.float64)
+
+    root_ids = {root: component_id for component_id, root in enumerate(sorted(roots))}
+    offsets = {airport: float(solution[idx]) for airport, idx in airport_index.items()}
+    components = {airport: root_ids[find(idx)] for airport, idx in airport_index.items()}
+    return offsets, components
+
+
 def safe_float(value):
     if value is None or pd.isna(value):
         return None
@@ -142,7 +222,7 @@ def flight_csv_for_llm(llm_path):
 def output_path_for_llm(llm_path):
     year = os.path.basename(os.path.dirname(os.path.dirname(llm_path)))
     month = os.path.basename(os.path.dirname(llm_path))
-    filename = os.path.basename(llm_path).replace("flight_chain_llm_", "flight_chain_llm_strict_")
+    filename = os.path.basename(llm_path).replace("flight_chain_llm_", "flight_chain_llm_t60_")
     out_dir = os.path.join(OUT_ROOT, year, month)
     return os.path.join(out_dir, filename)
 
@@ -179,12 +259,18 @@ def prepare_day_dataframe(csv_path):
         if col in df.columns:
             df[col] = pd.to_numeric(df[col], errors="coerce")
 
-    dep_min = df["DEP_MIN"].astype(np.float32)
-    arr_min = df["ARR_MIN"].astype(np.float32)
-    arr_sched_min = arr_min + np.where(arr_min < dep_min, 1440.0, 0.0)
-    df["ARR_SCHED_MIN"] = arr_sched_min.astype(np.float32)
-    df["ACT_DEP_MIN"] = dep_min + df["DEP_DELAY"].astype(np.float32)
-    df["ACT_ARR_MIN"] = arr_sched_min + df["ARR_DELAY"].astype(np.float32)
+    offsets, components = build_airport_clock_map(df)
+    df["ORIGIN_CLOCK_OFFSET"] = df["ORIGIN_NORM"].map(offsets).fillna(0.0).astype(np.float32)
+    df["DEST_CLOCK_OFFSET"] = df["DEST_NORM"].map(offsets).fillna(0.0).astype(np.float32)
+    df["ORIGIN_TIME_COMPONENT"] = df["ORIGIN_NORM"].map(components).fillna(-1).astype(np.int16)
+    df["DEST_TIME_COMPONENT"] = df["DEST_NORM"].map(components).fillna(-1).astype(np.int16)
+
+    dep_sched_utc = df["DEP_MIN"].astype(np.float32) - df["ORIGIN_CLOCK_OFFSET"]
+    arr_sched_utc = dep_sched_utc + df["CRS_ELAPSED_TIME"].astype(np.float32)
+    df["DEP_SCHED_UTC"] = dep_sched_utc
+    df["ARR_SCHED_UTC"] = arr_sched_utc
+    df["ACT_DEP_UTC"] = dep_sched_utc + df["DEP_DELAY"].astype(np.float32)
+    df["ACT_ARR_UTC"] = arr_sched_utc + df["ARR_DELAY"].astype(np.float32)
 
     return df.sort_values(["TAIL_NUM_NORM", "DEP_MIN"], kind="mergesort").reset_index(drop=True)
 
@@ -230,22 +316,29 @@ def make_group(arrays, idxs):
         return {
             "idx": idx,
             "dep_min": np.array([], dtype=np.int16),
-            "arr_sched_min": np.array([], dtype=np.float32),
-            "act_dep_min": np.array([], dtype=np.float32),
-            "act_arr_min": np.array([], dtype=np.float32),
+            "dep_sched_utc": np.array([], dtype=np.float32),
+            "arr_sched_utc": np.array([], dtype=np.float32),
+            "act_dep_utc": np.array([], dtype=np.float32),
+            "act_arr_utc": np.array([], dtype=np.float32),
+            "dep_component": np.array([], dtype=np.int16),
+            "arr_component": np.array([], dtype=np.int16),
             "dep_delay": np.array([], dtype=np.float32),
             "arr_delay": np.array([], dtype=np.float32),
         }
 
     dep_min = arrays["DEP_MIN"][idx].astype(np.int16, copy=False)
-    order = np.argsort(dep_min, kind="mergesort")
+    dep_sched_utc = arrays["DEP_SCHED_UTC"][idx].astype(np.float32, copy=False)
+    order = np.argsort(dep_sched_utc, kind="mergesort")
     idx = idx[order]
     return {
         "idx": idx,
         "dep_min": dep_min[order],
-        "arr_sched_min": arrays["ARR_SCHED_MIN"][idx].astype(np.float32, copy=False),
-        "act_dep_min": arrays["ACT_DEP_MIN"][idx].astype(np.float32, copy=False),
-        "act_arr_min": arrays["ACT_ARR_MIN"][idx].astype(np.float32, copy=False),
+        "dep_sched_utc": arrays["DEP_SCHED_UTC"][idx].astype(np.float32, copy=False),
+        "arr_sched_utc": arrays["ARR_SCHED_UTC"][idx].astype(np.float32, copy=False),
+        "act_dep_utc": arrays["ACT_DEP_UTC"][idx].astype(np.float32, copy=False),
+        "act_arr_utc": arrays["ACT_ARR_UTC"][idx].astype(np.float32, copy=False),
+        "dep_component": arrays["ORIGIN_TIME_COMPONENT"][idx].astype(np.int16, copy=False),
+        "arr_component": arrays["DEST_TIME_COMPONENT"][idx].astype(np.int16, copy=False),
         "dep_delay": arrays["DEP_DELAY"][idx].astype(np.float32, copy=False),
         "arr_delay": arrays["ARR_DELAY"][idx].astype(np.float32, copy=False),
     }
@@ -253,6 +346,7 @@ def make_group(arrays, idxs):
 
 def build_indices(df, arrays):
     raw_indices = {
+        "tail": defaultdict(list),
         "route": defaultdict(list),
         "airport_origin": defaultdict(list),
         "airport_dest": defaultdict(list),
@@ -266,7 +360,9 @@ def build_indices(df, arrays):
         origin = origins[idx]
         dest = dests[idx]
         carrier = carriers[idx]
+        tail = arrays["TAIL_NUM_NORM"][idx]
         route = (origin, dest)
+        raw_indices["tail"][tail].append(idx)
         raw_indices["route"][route].append(idx)
         raw_indices["airport_origin"][origin].append(idx)
         raw_indices["airport_dest"][dest].append(idx)
@@ -278,24 +374,23 @@ def build_indices(df, arrays):
     return indices
 
 
-def observed_group(group, current_min, delay_col="DEP_DELAY", limit=None, window=None, exclude_idx=None):
+def observed_group(group, cutoff_min, component, delay_col="DEP_DELAY", limit=None, window=None, exclude_idx=None):
     if group is None or group["idx"].size == 0:
         return None
 
     if delay_col == "ARR_DELAY":
-        sched_min = group["arr_sched_min"]
-        event_min = group["act_arr_min"]
-        values = group["arr_delay"]
+        event_min = group["act_arr_utc"]
+        event_component = group["arr_component"]
     else:
-        sched_min = group["dep_min"].astype(np.float32, copy=False)
-        event_min = group["act_dep_min"]
-        values = group["dep_delay"]
+        event_min = group["act_dep_utc"]
+        event_component = group["dep_component"]
 
-    mask = sched_min < float(current_min)
-    if window is not None:
-        mask &= sched_min >= float(current_min - window)
+    mask = np.ones(group["idx"].shape, dtype=bool)
+    mask &= event_component == int(component)
     mask &= np.isfinite(event_min)
-    mask &= event_min <= float(current_min)
+    mask &= event_min <= float(cutoff_min)
+    if window is not None:
+        mask &= event_min >= float(cutoff_min - window)
     if exclude_idx is not None:
         mask &= group["idx"] != int(exclude_idx)
 
@@ -303,10 +398,16 @@ def observed_group(group, current_min, delay_col="DEP_DELAY", limit=None, window
     if positions.size == 0:
         return None
 
-    order = np.argsort(sched_min[positions], kind="mergesort")
+    order = np.argsort(event_min[positions], kind="mergesort")
     positions = positions[order]
     if limit is not None:
         positions = positions[-limit:]
+
+    selected_event_min = event_min[positions]
+    if np.any(selected_event_min > float(cutoff_min)):
+        raise RuntimeError("Post-cutoff event entered an observed context")
+    if window is not None and np.any(selected_event_min < float(cutoff_min - window)):
+        raise RuntimeError("Event outside the lookback window entered an observed context")
 
     return {
         "idx": group["idx"][positions],
@@ -360,16 +461,6 @@ def summarize_group(group, delay_col="DEP_DELAY"):
     return summarize_values(values)
 
 
-def nz(value):
-    if value is None or pd.isna(value):
-        return 0.0
-    return float(value)
-
-
-def clip01(value):
-    return float(np.clip(nz(value), 0.0, 1.0))
-
-
 def build_sample_row_map(df, arrays):
     row_map = {}
     tail_groups = defaultdict(list)
@@ -401,32 +492,67 @@ def lookup_current_row(row_map, item):
     return row_map[key]
 
 
-def propagation_from_text(item):
-    text = item.get("input") or item.get("text") or ""
-    values = {}
-    for line in text.splitlines():
-        if "：" not in line:
-            continue
-        key, value = line.split("：", 1)
-        values[key.strip()] = value.strip()
-    return values
+def strict_tail_context(arrays, indices, row_idx, cutoff_min, component):
+    """Return previous-tail outcomes known at the fixed prediction cutoff."""
+    tail = arrays["TAIL_NUM_NORM"][row_idx]
+    group = indices["tail"].get(tail)
+    previous = [] if group is None else [
+        int(idx)
+        for idx, sched, comp in zip(group["idx"], group["dep_sched_utc"], group["dep_component"])
+        if int(idx) != row_idx and int(comp) == int(component) and float(sched) < float(arrays["DEP_SCHED_UTC"][row_idx])
+    ]
+
+    if not previous:
+        return {
+            "has_previous": False,
+            "prev_departed": None,
+            "prev_arrived": None,
+            "prev_dep_delay": None,
+            "prev_arr_delay": None,
+            "turnaround_slack_min": None,
+            "dep_delay_trend": None,
+        }
+
+    prev_idx = previous[-1]
+    prev_departed = bool(
+        np.isfinite(arrays["ACT_DEP_UTC"][prev_idx])
+        and arrays["ACT_DEP_UTC"][prev_idx] <= cutoff_min
+    )
+    prev_arrived = bool(
+        np.isfinite(arrays["ACT_ARR_UTC"][prev_idx])
+        and arrays["ACT_ARR_UTC"][prev_idx] <= cutoff_min
+    )
+    prev_dep = safe_float(arrays["DEP_DELAY"][prev_idx]) if prev_departed else None
+    prev_arr = safe_float(arrays["ARR_DELAY"][prev_idx]) if prev_arrived else None
+    slack = float(arrays["DEP_SCHED_UTC"][row_idx]) - float(arrays["ARR_SCHED_UTC"][prev_idx])
+
+    observed_dep = [
+        safe_float(arrays["DEP_DELAY"][idx])
+        for idx in previous
+        if np.isfinite(arrays["ACT_DEP_UTC"][idx])
+        and arrays["ACT_DEP_UTC"][idx] <= cutoff_min
+        and np.isfinite(arrays["DEP_DELAY"][idx])
+    ]
+    dep_trend = observed_dep[-1] - observed_dep[-2] if len(observed_dep) >= 2 else None
+
+    return {
+        "has_previous": True,
+        "prev_departed": prev_departed,
+        "prev_arrived": prev_arrived,
+        "prev_dep_delay": prev_dep,
+        "prev_arr_delay": prev_arr,
+        "turnaround_slack_min": slack,
+        "dep_delay_trend": dep_trend,
+    }
 
 
-def as_number(text):
-    try:
-        if text in (None, "", "缺失"):
-            return None
-        return float(text)
-    except Exception:
-        return None
-
-
-def cached_group_summary(cache, name, key, group, current_min, delay_col, limit=None, window=None, exclude_idx=None):
-    cache_key = (name, key, int(current_min), limit, window, delay_col, exclude_idx)
+def cached_group_summary(cache, name, key, group, cutoff_min, component, delay_col, limit=None, window=None, exclude_idx=None):
+    cache_key = (name, key, int(cutoff_min), int(component), limit, window, delay_col, exclude_idx)
     if cache_key not in cache:
         selected = observed_group(
             group,
-            current_min,
+            cutoff_min,
+            component,
             delay_col=delay_col,
             limit=limit,
             window=window,
@@ -436,13 +562,14 @@ def cached_group_summary(cache, name, key, group, current_min, delay_col, limit=
     return cache[cache_key]
 
 
-def cached_nearby_summary(cache, indices, nearby_cache, airport, current_min, index_name, delay_col, exclude_idx=None):
-    cache_key = ("nearby", index_name, airport, int(current_min), delay_col, exclude_idx)
+def cached_nearby_summary(cache, indices, nearby_cache, airport, cutoff_min, component, index_name, delay_col, exclude_idx=None):
+    cache_key = ("nearby", index_name, airport, int(cutoff_min), int(component), delay_col, exclude_idx)
     if cache_key not in cache:
         combined = combine_groups([
             observed_group(
                 indices[index_name].get(other),
-                current_min,
+                cutoff_min,
+                component,
                 delay_col=delay_col,
                 window=WINDOW_MINUTES,
                 exclude_idx=exclude_idx,
@@ -458,32 +585,20 @@ def build_context(arrays, indices, nearby_cache, context_cache, row_idx, item):
     dest = arrays["DEST_NORM"][row_idx]
     carrier = arrays["OP_CARRIER_NORM"][row_idx]
     dep_min = int(arrays["DEP_MIN"][row_idx])
+    cutoff_min = float(arrays["DEP_SCHED_UTC"][row_idx]) - PREDICTION_HORIZON_MINUTES
+    component = int(arrays["ORIGIN_TIME_COMPONENT"][row_idx])
     route = (origin, dest)
     reverse_route = (dest, origin)
 
-    near_origin = nearby_cache.get(origin, [])
-    near_dest = nearby_cache.get(dest, [])
-
-    old_summary = propagation_from_text(item)
-    prev_arr = as_number(old_summary.get("前序到达延误分钟数"))
-    prev_dep = as_number(old_summary.get("前序出发延误分钟数"))
-    slack = as_number(old_summary.get("计划过站缓冲时间(分钟)"))
-    dep_trend = as_number(old_summary.get("前两段出发延误变化趋势"))
-
-    remaining_slack = None
-    propagation_pressure = None
-    slack_breached = None
-    if slack is not None and prev_arr is not None:
-        remaining_slack = slack - max(0.0, prev_arr)
-        propagation_pressure = max(0.0, prev_arr) / max(slack, 1.0)
-        slack_breached = remaining_slack < 0
+    tail_context = strict_tail_context(arrays, indices, row_idx, cutoff_min, component)
 
     route_context = cached_group_summary(
         context_cache,
         "route",
         route,
         indices["route"].get(route),
-        dep_min,
+        cutoff_min,
+        component,
         "DEP_DELAY",
         limit=ROUTE_HISTORY_N,
         exclude_idx=row_idx,
@@ -493,7 +608,8 @@ def build_context(arrays, indices, nearby_cache, context_cache, row_idx, item):
         "reverse_route",
         reverse_route,
         indices["route"].get(reverse_route),
-        dep_min,
+        cutoff_min,
+        component,
         "DEP_DELAY",
         limit=ROUTE_HISTORY_N,
         exclude_idx=row_idx,
@@ -503,7 +619,8 @@ def build_context(arrays, indices, nearby_cache, context_cache, row_idx, item):
         "origin",
         origin,
         indices["airport_origin"].get(origin),
-        dep_min,
+        cutoff_min,
+        component,
         "DEP_DELAY",
         window=WINDOW_MINUTES,
         exclude_idx=row_idx,
@@ -513,7 +630,8 @@ def build_context(arrays, indices, nearby_cache, context_cache, row_idx, item):
         "dest",
         dest,
         indices["airport_dest"].get(dest),
-        dep_min,
+        cutoff_min,
+        component,
         "ARR_DELAY",
         window=WINDOW_MINUTES,
         exclude_idx=row_idx,
@@ -523,136 +641,59 @@ def build_context(arrays, indices, nearby_cache, context_cache, row_idx, item):
         "carrier_origin",
         (carrier, origin),
         indices["carrier_origin"].get((carrier, origin)),
-        dep_min,
+        cutoff_min,
+        component,
         "DEP_DELAY",
         window=WINDOW_MINUTES,
         exclude_idx=row_idx,
     )
     near_origin_context = cached_nearby_summary(
-        context_cache, indices, nearby_cache, origin, dep_min, "airport_origin", "DEP_DELAY", exclude_idx=row_idx
+        context_cache, indices, nearby_cache, origin, cutoff_min, component, "airport_origin", "DEP_DELAY", exclude_idx=row_idx
     )
     near_dest_context = cached_nearby_summary(
-        context_cache, indices, nearby_cache, dest, dep_min, "airport_dest", "ARR_DELAY", exclude_idx=row_idx
-    )
-
-    chain_pressure = clip01(propagation_pressure)
-    airport_pressure = (
-        0.45 * clip01(origin_context["delay_rate"])
-        + 0.25 * clip01(carrier_origin_context["delay_rate"])
-        + 0.15 * clip01(dest_context["delay_rate"])
-        + 0.10 * clip01(near_origin_context["delay_rate"])
-        + 0.05 * clip01(near_dest_context["delay_rate"])
-    )
-    route_pressure = (
-        0.75 * clip01(route_context["delay_rate"])
-        + 0.25 * clip01(reverse_route_context["delay_rate"])
-    )
-    composite_risk = (
-        0.50 * chain_pressure
-        + 0.30 * airport_pressure
-        + 0.20 * route_pressure
+        context_cache, indices, nearby_cache, dest, cutoff_min, component, "airport_dest", "ARR_DELAY", exclude_idx=row_idx
     )
 
     return {
-        "observation_policy": OBSERVATION_POLICY,
         "current": {
             "month": int(arrays["MONTH"][row_idx]) if not pd.isna(arrays["MONTH"][row_idx]) else None,
             "day_of_week": int(arrays["DAY_OF_WEEK"][row_idx]) if not pd.isna(arrays["DAY_OF_WEEK"][row_idx]) else None,
             "dep_time": hhmm_to_text(arrays["CRS_DEP_TIME"][row_idx]),
-            "arr_time": hhmm_to_text(arrays["CRS_ARR_TIME"][row_idx]),
+            "observation_time": minute_offset_to_text(dep_min - PREDICTION_HORIZON_MINUTES),
+            "prediction_horizon_min": PREDICTION_HORIZON_MINUTES,
             "origin": origin,
             "dest": dest,
             "carrier": carrier,
-            "flight_number": arrays["OP_CARRIER_FL_NUM_NORM"][row_idx],
-            "tail": arrays["TAIL_NUM_NORM"][row_idx],
             "elapsed_min": safe_float(arrays["CRS_ELAPSED_TIME"][row_idx]),
-            "origin_weather": {
-                "temp": safe_float(arrays["O_TEMP"][row_idx]),
-                "prcp": safe_float(arrays["O_PRCP"][row_idx]),
-                "wspd": safe_float(arrays["O_WSPD"][row_idx]),
-            },
-            "dest_weather": {
-                "temp": safe_float(arrays["D_TEMP"][row_idx]),
-                "prcp": safe_float(arrays["D_PRCP"][row_idx]),
-                "wspd": safe_float(arrays["D_WSPD"][row_idx]),
-            },
         },
-        "tail_chain": {
-            "prev_dep_delay": prev_dep,
-            "prev_arr_delay": prev_arr,
-            "turnaround_slack_min": slack,
-            "remaining_slack_min": remaining_slack,
-            "slack_breached": slack_breached,
-            "dep_delay_trend": dep_trend,
-            "propagation_pressure": propagation_pressure,
+        "tail_chain": tail_context,
+        "route_context": {
+            "count": route_context["count"],
+            "delay_rate": route_context["delay_rate"],
         },
-        "route_context": route_context,
-        "reverse_route_context": reverse_route_context,
+        "reverse_route_context": {
+            "count": reverse_route_context["count"],
+            "delay_rate": reverse_route_context["delay_rate"],
+        },
         "airport_context": {
-            "origin_60m": origin_context,
-            "dest_60m": dest_context,
-            "carrier_origin_60m": carrier_origin_context,
+            "origin_60m": {"count": origin_context["count"], "delay_rate": origin_context["delay_rate"]},
+            "dest_60m": {"count": dest_context["count"], "delay_rate": dest_context["delay_rate"]},
+            "carrier_origin_60m": {
+                "count": carrier_origin_context["count"],
+                "delay_rate": carrier_origin_context["delay_rate"],
+            },
         },
         "nearby_airport_context": {
-            "radius_km": NEARBY_RADIUS_KM,
-            "near_origin_airports": near_origin[:8],
-            "near_dest_airports": near_dest[:8],
-            "near_origin_60m": near_origin_context,
-            "near_dest_60m": near_dest_context,
-        },
-        "propagation_risk": {
-            "chain_pressure": chain_pressure,
-            "airport_pressure": airport_pressure,
-            "route_pressure": route_pressure,
-            "composite_risk": composite_risk,
+            "near_origin_60m": {
+                "count": near_origin_context["count"],
+                "delay_rate": near_origin_context["delay_rate"],
+            },
+            "near_dest_60m": {
+                "count": near_dest_context["count"],
+                "delay_rate": near_dest_context["delay_rate"],
+            },
         },
     }
-
-
-def render_compact_text(features):
-    cur = features["current"]
-    tail = features["tail_chain"]
-    route = features["route_context"]
-    airport = features["airport_context"]
-    nearby = features["nearby_airport_context"]
-    risk = features["propagation_risk"]
-
-    return "\n".join(
-        [
-            (
-                f"当前: {cur['origin']}->{cur['dest']}; {cur['dep_time']}起飞; {cur['arr_time']}到达; "
-                f"{cur['carrier']}{cur['flight_number']}; 尾号{cur['tail']}; 飞行{fmt(cur['elapsed_min'])}分钟"
-            ),
-            (
-                f"天气: 出发温度{fmt(cur['origin_weather']['temp'])}; 出发降水{fmt(cur['origin_weather']['prcp'])}; "
-                f"出发风速{fmt(cur['origin_weather']['wspd'])}; 到达风速{fmt(cur['dest_weather']['wspd'])}"
-            ),
-            (
-                f"同机传播: 前序出发延误{fmt(tail['prev_dep_delay'])}; 前序到达延误{fmt(tail['prev_arr_delay'])}; "
-                f"过站缓冲{fmt(tail['turnaround_slack_min'])}; 剩余缓冲{fmt(tail['remaining_slack_min'])}; "
-                f"传播压力{fmt(tail['propagation_pressure'], 2)}; 趋势{fmt(tail['dep_delay_trend'])}"
-            ),
-            (
-                f"同航段近{ROUTE_HISTORY_N}班: 数量{route['count']}; 延误率{fmt(route['delay_rate'], 2)}; "
-                f"均值{fmt(route['mean_delay'])}; 最大{fmt(route['max_delay'])}"
-            ),
-            (
-                f"机场近{WINDOW_MINUTES}分钟: 出发机场数量{airport['origin_60m']['count']}; "
-                f"出发延误率{fmt(airport['origin_60m']['delay_rate'], 2)}; "
-                f"出发均值{fmt(airport['origin_60m']['mean_delay'])}; "
-                f"同承运人延误率{fmt(airport['carrier_origin_60m']['delay_rate'], 2)}"
-            ),
-            (
-                f"邻近机场{int(NEARBY_RADIUS_KM)}km: 出发邻近数{nearby['near_origin_60m']['count']}; "
-                f"出发邻近延误率{fmt(nearby['near_origin_60m']['delay_rate'], 2)}; "
-                f"到达邻近延误率{fmt(nearby['near_dest_60m']['delay_rate'], 2)}"
-            ),
-            (
-                f"综合风险: 链式{fmt(risk['chain_pressure'], 2)}; 机场{fmt(risk['airport_pressure'], 2)}; "
-                f"航段{fmt(risk['route_pressure'], 2)}; 合计{fmt(risk['composite_risk'], 2)}"
-            ),
-        ]
-    )
 
 
 def enhance_day(llm_path, overwrite=False):
@@ -681,19 +722,20 @@ def enhance_day(llm_path, overwrite=False):
             item = json.loads(line)
             row_idx = lookup_current_row(row_map, item)
             features = build_context(arrays, indices, nearby_cache, context_cache, row_idx, item)
-            compact_text = render_compact_text(features)
+            compact_text = render_compact_features(
+                features,
+                chain_position=item.get("chain_position"),
+                chain_valid_length=item.get("chain_valid_length"),
+            )
 
             out = {
-                **item,
-                "schema_version": SCHEMA_VERSION,
-                "prompt_version": PROMPT_VERSION,
-                "observation_policy": OBSERVATION_POLICY,
-                "instruction": TASK_INSTRUCTION,
+                "sample_id": item["sample_id"],
+                "date": item["date"],
+                "chain_position": item["chain_position"],
+                "chain_valid_length": item["chain_valid_length"],
+                "label": int(item["label"]),
                 "features": features,
                 "compact_text": compact_text,
-                "input": compact_text,
-                "text": compact_text,
-                "output": LABEL_TEXT[int(item["label"])],
             }
             fout.write(json.dumps(out, ensure_ascii=False) + "\n")
             rows += 1
@@ -702,7 +744,11 @@ def enhance_day(llm_path, overwrite=False):
 
 
 def enhance_day_job(args):
-    return enhance_day(*args)
+    llm_path = args[0]
+    try:
+        return enhance_day(*args)
+    except Exception as exc:
+        raise RuntimeError(f"Failed T-60 preprocessing for {llm_path}: {exc}") from exc
 
 
 def main():
@@ -729,7 +775,7 @@ def main():
         workers = max(1, int(args.workers))
         if workers == 1 or len(files) == 1:
             iterator = (enhance_day(path, overwrite=args.overwrite) for path in files)
-            for result in tqdm(iterator, total=len(files), desc=f"LLM strict {year}"):
+            for result in tqdm(iterator, total=len(files), desc=f"LLM T-60 {year}"):
                 if result["skipped"]:
                     skipped += 1
                 else:
@@ -738,7 +784,7 @@ def main():
             jobs = [(path, args.overwrite) for path in files]
             with ProcessPoolExecutor(max_workers=workers) as executor:
                 futures = [executor.submit(enhance_day_job, job) for job in jobs]
-                for future in tqdm(as_completed(futures), total=len(futures), desc=f"LLM strict {year}"):
+                for future in tqdm(as_completed(futures), total=len(futures), desc=f"LLM T-60 {year}"):
                     result = future.result()
                     if result["skipped"]:
                         skipped += 1
@@ -757,6 +803,7 @@ def main():
             "written_rows": total_rows,
             "skipped_files": skipped,
             "window_minutes": WINDOW_MINUTES,
+            "prediction_horizon_minutes": PREDICTION_HORIZON_MINUTES,
             "route_history_n": ROUTE_HISTORY_N,
             "nearby_radius_km": NEARBY_RADIUS_KM,
             "workers": workers,

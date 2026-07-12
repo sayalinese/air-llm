@@ -6,15 +6,15 @@ import sys
 if __package__ in (None, ""):
     sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
-from service.config import MODEL_PATH, SAVE_DIR, DATA_DIR, PROMPT_TEMPLATE, LABEL_MAP
-from service.dataset import build_text_payload
+from service.config import CLASS_NAMES, MODEL_PATH, SAVE_DIR, data_path
+from service.dataset import build_prompt
 
 
 def parse_label(text):
     text = text.strip()
-    if text.startswith(LABEL_MAP[1]):
+    if text.startswith("B"):
         return 1
-    if text.startswith(LABEL_MAP[0]):
+    if text.startswith("A"):
         return 0
     return None
 
@@ -24,13 +24,13 @@ def vllm_inference():
     from vllm.lora.request import LoRARequest
     from sklearn.metrics import accuracy_score, f1_score, classification_report
 
-    test_path = os.path.join(DATA_DIR, "test.jsonl")
+    test_path = data_path("test")
     data = []
     with open(test_path, encoding='utf-8') as f:
         for line in f:
             data.append(json.loads(line))
 
-    prompts = [PROMPT_TEMPLATE.format(text=build_text_payload(item)) for item in data]
+    prompts = [build_prompt(item) for item in data]
     labels = [item['label'] for item in data]
 
     llm = LLM(
@@ -42,7 +42,7 @@ def vllm_inference():
         trust_remote_code=True,
     )
 
-    sampling = SamplingParams(temperature=0.0, max_tokens=5, logprobs=20)
+    sampling = SamplingParams(temperature=0.0, max_tokens=1, logprobs=5)
     outputs = llm.generate(
         prompts, sampling,
         lora_request=LoRARequest("delay_lora", 1, SAVE_DIR),
@@ -55,4 +55,4 @@ def vllm_inference():
     print(f"Invalid outputs: {invalid}/{len(outputs)}")
     print(f"ACC: {accuracy_score(labels, preds):.4f}")
     print(f"F1:  {f1_score(labels, preds):.4f}")
-    print(classification_report(labels, preds, target_names=['正常', '延误'], zero_division=0))
+    print(classification_report(labels, preds, target_names=[CLASS_NAMES[0], CLASS_NAMES[1]], zero_division=0))

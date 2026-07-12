@@ -3,8 +3,20 @@ import os
 
 # 路径
 MODEL_PATH = r"C:\Users\16960\.cache\modelscope\hub\models\google\gemma-4-E4B"
-DATA_DIR = r"c:\Users\16960\Desktop\期末论文\模型搭建\LLM\data"
-SAVE_DIR = r"c:\Users\16960\Desktop\期末论文\模型搭建\LLM\模型\lora_adapter"
+DATA_DIR = r"c:\Users\16960\Desktop\期末论文\模型搭建\LLM\data_t60"
+MODEL_OUTPUT_ROOT = r"c:\Users\16960\Desktop\期末论文\模型搭建\LLM\模型"
+# 消融阶段可由 run_ablation.py 通过环境变量切换。
+ABLATION_STAGES = ("current", "chain", "context", "nearby", "risk")
+ABLATION_STAGE = os.environ.get("LLM_ABLATION_STAGE", "nearby")
+if ABLATION_STAGE not in ABLATION_STAGES:
+    raise ValueError(f"Unknown LLM_ABLATION_STAGE={ABLATION_STAGE!r}; expected one of {ABLATION_STAGES}")
+EXPERIMENT_NAME = os.environ.get("LLM_EXPERIMENT_NAME", f"t60_probe_ablation_{ABLATION_STAGE}")
+SAVE_DIR = os.path.join(MODEL_OUTPUT_ROOT, EXPERIMENT_NAME)
+
+EXPECTED_SCHEMA_VERSION = "chain_llm_t60"
+EXPECTED_PROMPT_VERSION = "propagation_capsule_t60_operational"
+EXPECTED_OBSERVATION_POLICY = "utc_actual_event_at_or_before_t_minus_60"
+EXPECTED_PREDICTION_HORIZON_MINUTES = 60
 
 # 当前 modelscope 缓存是多模态权重, 但训练只需要文本塔。
 # text_from_multimodal: 只抽取 model.language_model.* 加载到 Gemma4ForCausalLM。
@@ -25,15 +37,22 @@ LORA_TARGET_REGEX = r".*language_model.*\.(q_proj|k_proj|v_proj|o_proj|gate_proj
 # 目标：先快速验证 Gemma base + LoRA 是否能学会稳定输出“正常/延误”
 # 批次大小: 最低显存 smoke test
 BATCH_SIZE = 1
-# 梯度累积: 等效 batch_size = 1 * 32 = 32，保持原 smoke test 梯度规模
-GRAD_ACCUM = 32
+# 梯度累积: 等效 batch_size = 16
+GRAD_ACCUM = 16
 # 学习率: 第一轮先用更稳的 1e-4
 LEARNING_RATE = 1e-4
-# 训练轮数: 只跑 1 轮做 smoke test
-EPOCHS = 1
-# 第一轮 smoke test 只读少量样本, 确认链路和 loss 趋势后再改成 None 跑全量
-TRAIN_MAX_SAMPLES = 2000
-VAL_MAX_SAMPLES = 2000
+# probe 消融跑两轮；10k 候选跑一轮。
+DATASET_VARIANT = os.environ.get("LLM_DATASET_VARIANT", "probe")
+EPOCHS = int(os.environ.get("LLM_EPOCHS", 1 if DATASET_VARIANT == "medium" else 2))
+DATA_FILES = {
+    "full": {"train": "train.jsonl", "val": "val.jsonl", "test": "test.jsonl"},
+    "probe": {"train": "train_probe.jsonl", "val": "val_probe.jsonl", "test": "test_probe.jsonl"},
+    "medium": {"train": "train_10k.jsonl", "val": "val_2k.jsonl", "test": "test_final.jsonl"},
+}
+if DATASET_VARIANT not in DATA_FILES:
+    raise ValueError(f"Unknown LLM_DATASET_VARIANT={DATASET_VARIANT!r}; expected one of {tuple(DATA_FILES)}")
+TRAIN_MAX_SAMPLES = None
+VAL_MAX_SAMPLES = None
 # 预热比例: 极短测试版缩短 warmup
 WARMUP_RATIO = 0.03
 # 最大序列长度: 低显存 smoke test
@@ -45,38 +64,35 @@ WEIGHT_DECAY = 0.01
 # full: 使用完整训练集; balanced_smoke: 使用带权采样做类别均衡 smoke test
 TRAIN_SAMPLING_MODE = "balanced_smoke"
 # balanced_smoke 模式下每个 epoch 最多抽多少条样本, 设为 None 则等同完整训练集长度
-SMOKE_NUM_SAMPLES = 2000
+SMOKE_NUM_SAMPLES = int(os.environ.get("LLM_SMOKE_NUM_SAMPLES", 10000 if DATASET_VARIANT == "medium" else 2048))
 BALANCED_POS_RATIO = 0.20
 # full: 保留原始字段文本; compact: 重新整理为更短、更稳定的结构化文本
 PROMPT_STYLE = "compact"
 # 评估时每次读取多少条样本; None 表示全量
-EVAL_MAX_SAMPLES = 2000
+EVAL_MAX_SAMPLES = None
+EVAL_BATCH_SIZE = 8
+RANDOM_SEED = 42
+FAIL_ON_PROMPT_TRUNCATION = True
 
 # 数据接口:
 # 旧格式: {"text": "...", "label": 0/1}
 # 新格式: {"instruction": "...", "input": "...", "output": "...", "label": 0/1}
-PROMPT_TEMPLATE_FULL = """任务：根据以下航班链信息，判断当前航班是否会出发延误超过15分钟。
-
-要求：
-1. 只能输出一个标签。
-2. 不要输出解释、原因或多余文字。
-3. 合法标签只有：正常、延误。
-
-航班链信息：
+PROMPT_TEMPLATE_FULL = """出延>15? A正常 B延误。答A/B。
 {text}
+答:"""
 
-答案："""
-
-PROMPT_TEMPLATE_COMPACT = """任务：判断当前航班是否会出发延误超过15分钟。
-只输出一个标签：正常 或 延误。
-
+PROMPT_TEMPLATE_COMPACT = """出延>15? A正常 B延误。答A/B。
 {text}
-
-答案："""
+答:"""
 
 PROMPT_TEMPLATES = {
     "full": PROMPT_TEMPLATE_FULL,
     "compact": PROMPT_TEMPLATE_COMPACT,
 }
 PROMPT_TEMPLATE = PROMPT_TEMPLATES[PROMPT_STYLE]
-LABEL_MAP = {0: "正常", 1: "延误"}
+LABEL_MAP = {0: "A", 1: "B"}
+CLASS_NAMES = {0: "正常", 1: "延误"}
+
+
+def data_path(split):
+    return os.path.join(DATA_DIR, DATA_FILES[DATASET_VARIANT][split])

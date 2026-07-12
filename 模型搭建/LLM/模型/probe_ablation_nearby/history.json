@@ -1,0 +1,40 @@
+[
+  {
+    "epoch": 1,
+    "train_loss": 0.8013791687117191,
+    "val_loss": 0.3655090090820431,
+    "prompt_style": "compact",
+    "sampling_mode": "balanced_smoke",
+    "balanced_pos_ratio": 0.2,
+    "train_max_samples": null,
+    "val_max_samples": null,
+    "max_len": 192,
+    "model_arch": "text_from_multimodal",
+    "ablation_stage": "nearby",
+    "experiment_name": "probe_ablation_nearby",
+    "dataset_variant": "probe",
+    "dataset_schema_version": "chain_llm_strict_event",
+    "dataset_prompt_version": "propagation_capsule_compact",
+    "dataset_observation_policy": "strict_actual_event_before_prediction",
+    "dataset_daily_root": "C:\\Users\\16960\\Desktop\\\u671f\u672b\u8bba\u6587\\\u4e09\u6a21\u6001\u6570\u636e\u5e93\u5efa\u7acb\u8bf4\u660e\\scripts\\Aeolus_V2\\dataset\\Flight_Chain_LLM_strict_event"
+  },
+  {
+    "epoch": 2,
+    "train_loss": 0.3525436600948524,
+    "val_loss": 0.34929592674511706,
+    "prompt_style": "compact",
+    "sampling_mode": "balanced_smoke",
+    "balanced_pos_ratio": 0.2,
+    "train_max_samples": null,
+    "val_max_samples": null,
+    "max_len": 192,
+    "model_arch": "text_from_multimodal",
+    "ablation_stage": "nearby",
+    "experiment_name": "probe_ablation_nearby",
+    "dataset_variant": "probe",
+    "dataset_schema_version": "chain_llm_strict_event",
+    "dataset_prompt_version": "propagation_capsule_compact",
+    "dataset_observation_policy": "strict_actual_event_before_prediction",
+    "dataset_daily_root": "C:\\Users\\16960\\Desktop\\\u671f\u672b\u8bba\u6587\\\u4e09\u6a21\u6001\u6570\u636e\u5e93\u5efa\u7acb\u8bf4\u660e\\scripts\\Aeolus_V2\\dataset\\Flight_Chain_LLM_strict_event"
+  }
+]

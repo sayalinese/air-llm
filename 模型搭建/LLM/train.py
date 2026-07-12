@@ -27,11 +27,40 @@ def load_dataset_manifest():
 
 def dataset_run_state(manifest):
     return {
+        'experiment_name': EXPERIMENT_NAME,
+        'dataset_variant': DATASET_VARIANT,
+        'ablation_stage': ABLATION_STAGE,
         'dataset_schema_version': manifest.get('schema_version'),
         'dataset_prompt_version': manifest.get('prompt_version'),
         'dataset_observation_policy': manifest.get('observation_policy'),
+        'dataset_prediction_horizon_minutes': manifest.get('prediction_horizon_minutes'),
         'dataset_daily_root': manifest.get('daily_root'),
     }
+
+
+def validate_dataset_manifest(manifest):
+    expected = {
+        "schema_version": EXPECTED_SCHEMA_VERSION,
+        "prompt_version": EXPECTED_PROMPT_VERSION,
+        "observation_policy": EXPECTED_OBSERVATION_POLICY,
+        "prediction_horizon_minutes": EXPECTED_PREDICTION_HORIZON_MINUTES,
+    }
+    mismatches = {
+        key: (manifest.get(key), value)
+        for key, value in expected.items()
+        if manifest.get(key) != value
+    }
+    if mismatches:
+        raise RuntimeError(
+            f"Dataset manifest is incompatible with experiment {EXPERIMENT_NAME}: {mismatches}. "
+            "Rebuild T-60 daily data and splits before training."
+        )
+    if DATASET_VARIANT not in manifest.get("available_variants", []):
+        raise RuntimeError(
+            f"Dataset variant {DATASET_VARIANT!r} is not ready. Available variants: "
+            f"{manifest.get('available_variants', [])}. Run 1_build_chain_llm_splits.py "
+            "without --probe-only before switching to full."
+        )
 
 
 def collate_fn(batch):
@@ -49,6 +78,7 @@ def build_train_loader(train_ds):
             weights=train_ds.sample_weights(target_pos_ratio=BALANCED_POS_RATIO),
             num_samples=num_samples,
             replacement=True,
+            generator=torch.Generator().manual_seed(RANDOM_SEED),
         )
         print(f"Balanced smoke sampling: {num_samples} samples/epoch, target_pos_ratio={BALANCED_POS_RATIO:.4f}")
         return DataLoader(train_ds, batch_size=BATCH_SIZE, sampler=sampler, collate_fn=collate_fn)
@@ -65,12 +95,17 @@ def save_checkpoint(model, optimizer, scheduler, epoch, best_loss, history, mani
         'epoch': epoch,
         'best_loss': best_loss,
         'history': history,
+        'experiment_name': EXPERIMENT_NAME,
+        'dataset_variant': DATASET_VARIANT,
+        'ablation_stage': ABLATION_STAGE,
         'train_max_samples': TRAIN_MAX_SAMPLES,
         'val_max_samples': VAL_MAX_SAMPLES,
         'max_len': MAX_LEN,
         'prompt_style': PROMPT_STYLE,
         'sampling_mode': TRAIN_SAMPLING_MODE,
         'balanced_pos_ratio': BALANCED_POS_RATIO,
+        'smoke_num_samples': SMOKE_NUM_SAMPLES,
+        'epochs': EPOCHS,
         'model_arch': MODEL_ARCH,
         **dataset_run_state(manifest),
     }, os.path.join(CKPT_DIR, 'train_state.pt'))
@@ -94,16 +129,22 @@ def load_checkpoint(model, optimizer, scheduler):
 
 
 def train():
+    torch.manual_seed(RANDOM_SEED)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(RANDOM_SEED)
     device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
     print(f"Device: {device}")
     manifest = load_dataset_manifest()
-    if manifest:
-        print(
-            "Dataset: "
-            f"{manifest.get('schema_version')} | "
-            f"{manifest.get('prompt_version')} | "
-            f"{manifest.get('observation_policy')}"
-        )
+    if not manifest:
+        raise FileNotFoundError(f"Dataset manifest not found: {MANIFEST_PATH}")
+    validate_dataset_manifest(manifest)
+    print(
+        "Dataset: "
+        f"{manifest.get('schema_version')} | "
+        f"{manifest.get('prompt_version')} | "
+        f"{manifest.get('observation_policy')}"
+    )
+    print(f"Experiment: {EXPERIMENT_NAME} -> {SAVE_DIR}")
 
     tokenizer = load_tokenizer()
     print("Loading model...")
@@ -115,11 +156,11 @@ def train():
     if hasattr(model, "enable_input_require_grads"):
         model.enable_input_require_grads()
 
-    train_ds = FlightDelayDataset(os.path.join(DATA_DIR, "train.jsonl"), tokenizer, max_samples=TRAIN_MAX_SAMPLES)
-    val_ds = FlightDelayDataset(os.path.join(DATA_DIR, "val.jsonl"), tokenizer, max_samples=VAL_MAX_SAMPLES)
+    train_ds = FlightDelayDataset(data_path("train"), tokenizer, max_samples=TRAIN_MAX_SAMPLES)
+    val_ds = FlightDelayDataset(data_path("val"), tokenizer, max_samples=VAL_MAX_SAMPLES)
     print(f"Train: {len(train_ds)}, Val: {len(val_ds)}")
     print(f"Train labels: {dict(train_ds.label_counts)}, Val labels: {dict(val_ds.label_counts)}")
-    print(f"Max samples: train={TRAIN_MAX_SAMPLES}, val={VAL_MAX_SAMPLES}")
+    print(f"Files: train={data_path('train')}, val={data_path('val')}")
     print(f"Prompt style: {PROMPT_STYLE}, Sampling: {TRAIN_SAMPLING_MODE}")
 
     train_loader = build_train_loader(train_ds)
@@ -141,11 +182,16 @@ def train():
         state = torch.load(ckpt_path, map_location=device, weights_only=True)
         same_run = (
             state.get('train_max_samples') == TRAIN_MAX_SAMPLES
+            and state.get('experiment_name') == EXPERIMENT_NAME
+            and state.get('dataset_variant') == DATASET_VARIANT
+            and state.get('ablation_stage') == ABLATION_STAGE
             and state.get('val_max_samples') == VAL_MAX_SAMPLES
             and state.get('max_len') == MAX_LEN
             and state.get('prompt_style') == PROMPT_STYLE
             and state.get('sampling_mode') == TRAIN_SAMPLING_MODE
             and state.get('balanced_pos_ratio') == BALANCED_POS_RATIO
+            and state.get('smoke_num_samples') == SMOKE_NUM_SAMPLES
+            and state.get('epochs') == EPOCHS
             and state.get('model_arch') == MODEL_ARCH
             and all(state.get(k) == v for k, v in dataset_run_state(manifest).items())
         )
@@ -204,6 +250,7 @@ def train():
             'val_max_samples': VAL_MAX_SAMPLES,
             'max_len': MAX_LEN,
             'model_arch': MODEL_ARCH,
+            'ablation_stage': ABLATION_STAGE,
             **dataset_run_state(manifest),
         })
 

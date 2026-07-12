@@ -1,12 +1,12 @@
 [
   {
     "epoch": 1,
-    "train_loss": 2.5811319861134687,
-    "val_loss": 0.4684575050654821,
+    "train_loss": 0.6379676753814469,
+    "val_loss": 0.024648159127180776,
     "prompt_style": "compact",
     "sampling_mode": "balanced_smoke",
     "balanced_pos_ratio": 0.2,
-    "train_max_samples": 2000,
+    "train_max_samples": 10000,
     "val_max_samples": 2000,
     "max_len": 192,
     "model_arch": "text_from_multimodal",
