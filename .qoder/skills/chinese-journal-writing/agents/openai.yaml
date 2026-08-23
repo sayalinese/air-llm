@@ -1,7 +1,0 @@
-interface:
-  display_name: "中文期刊论文写作"
-  short_description: "按中文期刊样本格式撰写、润色、排版论文"
-  default_prompt: "Use $chinese-journal-writing to draft or revise a Chinese journal manuscript following my sample format."
-
-policy:
-  allow_implicit_invocation: true
