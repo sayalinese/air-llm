@@ -16,4 +16,6 @@
 __pycache__/
 .git/
 .agents/
+.qoder/
+论文/
 **/__pycache__/**
