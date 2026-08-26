@@ -8,9 +8,10 @@
 # 允许根目录 .gitignore 自身
 !.gitignore
 
-# 放行所有 .py / .ps1
+# 放行所有 .py / .ps1 / .md
 !*.py
 !*.ps1
+!*.md
 
 # 排除不需要的目录
 __pycache__/
