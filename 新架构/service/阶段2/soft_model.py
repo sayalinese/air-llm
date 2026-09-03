@@ -10,10 +10,11 @@ import config2 as C
 class SoftPromptNet(nn.Module):
     """投影 GAT 向量为 K 个软token, 拼进 LLM 输入; 头读 LLM 隐藏态分类。"""
 
-    def __init__(self, H, z_dim=128):
+    def __init__(self, H, z_dim=128, readout_mode=None):
         super().__init__()
-        if C.READOUT_MODE not in {"soft_prefix", "text_then_soft", "cls"}:
-            raise ValueError(f"Unsupported READOUT_MODE={C.READOUT_MODE}")
+        self.readout_mode = readout_mode or C.READOUT_MODE
+        if self.readout_mode not in {"soft_prefix", "text_then_soft", "cls"}:
+            raise ValueError(f"Unsupported READOUT_MODE={self.readout_mode}")
         self.H = H
         layers = []
         if C.PROJ_NORM:                       # E1: z 输入归一化
@@ -22,7 +23,7 @@ class SoftPromptNet(nn.Module):
         if C.PROJ_NORM:                       # E1: 投影后非线性 (与归一绑定)
             layers.append(nn.GELU())
         self.proj = nn.Sequential(*layers)
-        if C.READOUT_MODE == "cls":
+        if self.readout_mode == "cls":
             self.cls_token = nn.Parameter(torch.empty(1, 1, H))
             nn.init.normal_(self.cls_token, mean=0.0, std=0.02)
         if C.TOKEN_GATE:                      # S1: 读出门控, 偏置+2初始g≈0.88
@@ -46,12 +47,12 @@ class SoftPromptNet(nn.Module):
         soft = self.proj(z).view(B, K, H)
         soft_mask = torch.ones(B, K, device=soft.device, dtype=mask.dtype)
 
-        if C.READOUT_MODE == "soft_prefix":
+        if self.readout_mode == "soft_prefix":
             full_ids = torch.cat([dummy, ids], 1)
             ie = torch.cat([soft, te], 1)
             am = torch.cat([soft_mask, mask], 1)
             soft_slice = slice(0, K)
-        elif C.READOUT_MODE == "text_then_soft":
+        elif self.readout_mode == "text_then_soft":
             full_ids = torch.cat([ids, dummy], 1)
             ie = torch.cat([te, soft], 1)
             am = torch.cat([mask, soft_mask], 1)
@@ -69,7 +70,7 @@ class SoftPromptNet(nn.Module):
             pli = txt.get_per_layer_inputs(full_ids, None)   # 预计算, 防词表反向爆显存
         out = txt(inputs_embeds=ie, per_layer_inputs=pli, attention_mask=am)
         h_soft = out.last_hidden_state[:, soft_slice]
-        if C.READOUT_MODE == "cls":
+        if self.readout_mode == "cls":
             h = out.last_hidden_state[:, -1]
         elif C.TOKEN_GATE:
             g = torch.sigmoid(self.gate_logits.float()).view(1, K, 1)   # fp32防bf16吞更新

@@ -101,10 +101,10 @@ XGB_N_JOBS = int(os.environ.get("XGB_N_JOBS", 8))
 
 
 # ---- LLM (Gemma) 链上下文融合 (4_链式LLM融合) ----
-# 复用外层同一个 Gemma-4-E4B 文本塔; 冻结, 嵌入一次性缓存。
+# 冻结文本塔, 嵌入一次性缓存。原用 E4B 显存压力大(爆显存转内存降速), 改用 E2B。
 GEMMA_MODEL_PATH = os.environ.get(
     "LLM_MODEL_PATH",
-    r"C:\Users\16960\.cache\modelscope\hub\models\google\gemma-4-E4B",
+    r"C:\Users\16960\.cache\modelscope\hub\models\unsloth\gemma-4-E2B",
 )
 LLM_PROMPT_VERSION = os.environ.get("CHAIN_LLM_PROMPT_VER", "chainctx_v1")
 LLM_MAX_LEN = int(os.environ.get("CHAIN_LLM_MAX_LEN", 256))

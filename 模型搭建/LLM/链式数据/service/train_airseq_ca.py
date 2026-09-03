@@ -80,6 +80,7 @@ def _train_one(mode, prepared, vocab_sizes, llm_dim, device, do_test):
 
     best = {"auc": -1.0, "state": None, "epoch": -1}
     patience = 0
+    history = []
     for epoch in range(AIRSEQ_EPOCHS):
         model.train()
         total, nb = 0.0, 0
@@ -97,6 +98,8 @@ def _train_one(mode, prepared, vocab_sizes, llm_dim, device, do_test):
         val_prob, val_true = _evaluate(model, val_loader, device)
         vm, _ = compute_metrics(val_true, val_prob, 0.5)
         print(f"[{mode}] epoch {epoch + 1} | loss={total / max(1, nb):.4f} | val_auc={vm['auc']:.4f} pr_auc={vm['pr_auc']:.4f}")
+        history.append({"epoch": epoch + 1, "train_loss": total / max(1, nb),
+                        "val_auc": vm["auc"], "val_pr_auc": vm["pr_auc"]})
         if vm["auc"] > best["auc"]:
             best = {"auc": vm["auc"], "state": copy.deepcopy(model.state_dict()), "epoch": epoch + 1}
             patience = 0
@@ -109,6 +112,10 @@ def _train_one(mode, prepared, vocab_sizes, llm_dim, device, do_test):
     if best["state"] is not None:
         model.load_state_dict(best["state"])
     torch.save(model.state_dict(), os.path.join(SAVE_DIR, f"airseq_ca_{mode}.pt"))
+    # 逐轮曲线落盘 (文件名带种子号, 多种子不互相覆盖; 供论文绘图)
+    pd.DataFrame(history).to_csv(
+        os.path.join(SAVE_DIR, f"history_airseq_ca_{mode}_s{torch.initial_seed()}.csv"),
+        index=False, encoding="utf-8-sig")
 
     val_prob, val_true = _evaluate(model, val_loader, device)
     threshold, _ = search_threshold(val_true, val_prob)

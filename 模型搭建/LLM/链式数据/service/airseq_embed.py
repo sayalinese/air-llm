@@ -125,12 +125,17 @@ def ensure_airseq_seq_embeddings(split, texts, device=None, batch_size=None, max
             iterator = tqdm(range(0, len(missing), batch_size), desc=f"[airseq_seq:{split}] embedding")
         except Exception:
             iterator = range(0, len(missing), batch_size)
+        done_since_save = 0
         for start in iterator:
             chunk = missing[start:start + batch_size]
             res, hidden_size = _encode_batch(text_model, tokenizer, [texts[s] for s in chunk],
                                              device, max_len, max_neighbors)
             for s, item in zip(chunk, res):
                 store[s] = item
+            done_since_save += len(chunk)
+            if done_since_save >= 4000:   # 定期落盘: 崩溃最多丢 4000 条, 重启可断点续编
+                _save_store(path, store, hidden_size, sig)
+                done_since_save = 0
         _save_store(path, store, hidden_size, sig)
         if owns:
             del text_model
